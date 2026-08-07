@@ -1471,6 +1471,32 @@ iterator trackerCounterKeys*(loop: PDispatcher): string =
   for key in loop.counters.keys():
     yield key
 
+proc pendingCallbacksCount*(): int =
+  ## Returns the number of callbacks ready to run on the current thread's
+  ## dispatcher - i.e. work scheduled via `callSoon`/`addCallback` (directly
+  ## or via a completed `Future`'s continuation) that has not yet been
+  ## dispatched. Zero when the dispatcher has nothing outstanding beyond its
+  ## own bookkeeping.
+  ##
+  ## Timers (`setTimer`/`sleepAsync`) are never counted here: they live in
+  ## the timer heap and only join the callback queue once they fire, so a
+  ## pending sleep or the 33ms-class auto-repaint timer does not register as
+  ## "busy". Available unconditionally - unlike `pendingFuturesCount`, this
+  ## does not require `-d:chronosFutureTracking`.
+  ##
+  ## Intended for deterministic tests and similar introspection that needs
+  ## to know whether the dispatcher would have more synchronous work to do
+  ## before it would otherwise block in `poll()`.
+  let loop = getThreadDispatcher()
+  when chronosStrictReentrancy:
+    loop.callbacks.len
+  else:
+    # `loop.callbacks` always holds exactly one `SentinelCallback` outside
+    # of `poll()`'s own internal draining window (see `poll()`'s
+    # `addLast(SentinelCallback)` / `addFirst(SentinelCallback)` pair) -
+    # subtract it so an idle dispatcher reads zero.
+    loop.callbacks.len - 1
+
 when chronosFutureTracking:
   iterator pendingFutures*(): FutureBase =
     ## Iterates over the list of pending Futures (Future[T] objects which not
