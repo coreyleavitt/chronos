@@ -1473,20 +1473,41 @@ iterator trackerCounterKeys*(loop: PDispatcher): string =
 
 proc pendingCallbacksCount*(): int =
   ## Returns the number of callbacks ready to run on the current thread's
-  ## dispatcher - i.e. work scheduled via `callSoon`/`addCallback` (directly
-  ## or via a completed `Future`'s continuation) that has not yet been
-  ## dispatched. Zero when the dispatcher has nothing outstanding beyond its
-  ## own bookkeeping.
+  ## dispatcher - i.e. entries currently sitting in `loop.callbacks`,
+  ## scheduled via `callSoon`/`addCallback` (directly or via a completed
+  ## `Future`'s continuation) and not yet dispatched. Under the default
+  ## build (`not chronosStrictReentrancy`), the queue's permanent
+  ## `SentinelCallback` is excluded from the count, so a dispatcher with
+  ## nothing in `loop.callbacks` reads zero.
   ##
-  ## Timers (`setTimer`/`sleepAsync`) are never counted here: they live in
-  ## the timer heap and only join the callback queue once they fire, so a
-  ## pending sleep or the 33ms-class auto-repaint timer does not register as
-  ## "busy". Available unconditionally - unlike `pendingFuturesCount`, this
-  ## does not require `-d:chronosFutureTracking`.
+  ## This does **not** account for all outstanding work. Not visible here:
+  ## - Timers (`setTimer`/`sleepAsync`): they live in the timer heap and only
+  ##   join `loop.callbacks` once they fire, so a pending sleep or the
+  ##   33ms-class auto-repaint timer does not register as "busy".
+  ## - Idle callbacks (`callIdle`): queued separately in `loop.idlers` and
+  ##   only migrated into `loop.callbacks` by `poll()` when there are no
+  ##   pending network events for that iteration.
+  ## - Tick callbacks (`internalCallTick`, the "tick queue" `loop.ticks`):
+  ##   used by `stepsAsync`'s continuation chaining for `number > 1`,
+  ##   `idleAsync`, and the `checktick` retry `Future.cancelSoon()` reschedules
+  ##   when a callback still needs to run - collectively "tick riders". `poll()`
+  ##   migrates the whole tick queue into `loop.callbacks` once, near the top
+  ##   of each call (`processTicks()`), before running any callbacks. A tick
+  ##   enqueued *during* that same poll's callback batch (e.g. a `checktick`
+  ##   re-arming itself, or the next link of a `stepsAsync` chain) therefore
+  ##   sits in `loop.ticks`, invisible to this accessor, until the *next*
+  ##   `poll()` call migrates it in - not the current one.
+  ##
+  ## Available unconditionally - unlike `pendingFuturesCount`, this does not
+  ## require `-d:chronosFutureTracking`.
   ##
   ## Intended for deterministic tests and similar introspection that needs
-  ## to know whether the dispatcher would have more synchronous work to do
-  ## before it would otherwise block in `poll()`.
+  ## to know whether the dispatcher has ready callback-queue work to do
+  ## before it would otherwise block in `poll()`. A zero reading is exact
+  ## for `loop.callbacks` at the instant it is taken, but is not a
+  ## dispatcher-wide idle proof: a caller that also needs tick-queue work
+  ## to have settled (e.g. a `cancelSoon`-driven retry) must account for
+  ## that separately.
   let loop = getThreadDispatcher()
   when chronosStrictReentrancy:
     loop.callbacks.len
