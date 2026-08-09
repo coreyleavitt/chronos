@@ -111,3 +111,45 @@ suite "callSoon() tests suite":
     poll()
     check: crossThreadCallSoonFlag == true
     joinThreads(thread)
+
+suite "pendingCallbacksCount() tests suite":
+  test "idle dispatcher reads zero":
+    # A pure state read - no `poll()` call here. `poll()` blocks until at
+    # least one event completes, and a genuinely idle dispatcher (no
+    # timers, no fds, no ready callbacks) has nothing to wake it, so
+    # calling it here would hang instead of demonstrating the invariant.
+    check pendingCallbacksCount() == 0
+
+  test "counts callSoon() scheduled work before a poll() drains it":
+    proc noop(udata: pointer) {.gcsafe, raises: [].} = discard
+
+    check pendingCallbacksCount() == 0
+    callSoon(noop)
+    callSoon(noop)
+    callSoon(noop)
+    check pendingCallbacksCount() == 3
+    poll()
+    check pendingCallbacksCount() == 0
+
+  test "from inside a callback: counts remaining callbacks in the batch, drains to zero":
+    var observed: seq[int]
+
+    proc third(udata: pointer) {.gcsafe, raises: [].} =
+      observed.add(pendingCallbacksCount())
+
+    proc second(udata: pointer) {.gcsafe, raises: [].} =
+      observed.add(pendingCallbacksCount())
+
+    proc first(udata: pointer) {.gcsafe, raises: [].} =
+      observed.add(pendingCallbacksCount())
+
+    callSoon(first)
+    callSoon(second)
+    callSoon(third)
+    check pendingCallbacksCount() == 3
+    poll()
+
+    # Inside `first`, `second` and `third` are still queued behind it;
+    # inside `second`, only `third` remains; `third` is last in the batch.
+    check observed == @[2, 1, 0]
+    check pendingCallbacksCount() == 0
