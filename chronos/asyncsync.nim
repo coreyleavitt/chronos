@@ -208,6 +208,18 @@ proc isSet*(event: AsyncEvent): bool =
   ## Return `true` if and only if the internal flag of ``event`` is `true`.
   event.flag
 
+proc waitersCount*(event: AsyncEvent): int {.raises: [].} =
+  ## Returns the number of tasks currently blocked in `wait()` on
+  ## ``event`` - i.e. futures registered in its waiter list that have
+  ## neither been completed by `fire()` nor cancelled.
+  ##
+  ## Intended for deterministic tests and similar introspection that
+  ## needs to bound how many losing `wait()` futures a caller is
+  ## accumulating - e.g. verifying a long-lived reused `wait()` future
+  ## discipline doesn't regress into leaking a fresh waiter per losing
+  ## iteration.
+  event.waiters.len
+
 proc newAsyncQueue*[T](maxsize: int = 0): AsyncQueue[T] =
   ## Creates a new asynchronous queue ``AsyncQueue``.
 
